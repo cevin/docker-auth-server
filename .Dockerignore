@@ -1,0 +1,6 @@
+/.idea
+/.gitignore
+/*.iml
+
+/config.json
+/config.json.example
