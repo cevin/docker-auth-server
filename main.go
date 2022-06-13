@@ -1,10 +1,19 @@
 package main
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha512"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"golang.org/x/sync/errgroup"
+	"io/fs"
 	"io/ioutil"
 	"log"
 	"net"
@@ -28,6 +37,7 @@ type config struct {
 	Port        int    `json:"port,omitempty"`
 	PrivateKey  string `json:"private_key,omitempty"`
 	Certificate string `json:"certificate,omitempty"`
+	Issuer      string `json:"issuer,omitempty"`
 
 	Users map[string]string `json:"users,omitempty"`
 	Repos map[string]*repo  `json:"repos,omitempty"`
@@ -40,24 +50,6 @@ type repo struct {
 /**
  * internal structs
  */
-
-type token struct {
-	tokenPayload *tokenPayload
-}
-
-func (token token) Generate() (string, error) {
-
-	tmpPayload := *token.tokenPayload
-
-	now := int(time.Now().Unix())
-	exp := int(time.Now().Unix() + 600)
-
-	tmpPayload.Iat = &now
-	tmpPayload.Nbf = &now
-	tmpPayload.Exp = &exp
-
-	return "", nil
-}
 
 type tokenPayload struct {
 	// Iss token签发组织
@@ -77,13 +69,37 @@ type tokenPayload struct {
 	Access []access `json:"access,omitempty"`
 }
 
-func (payload *tokenPayload) AppendAccess(access *access) {
-	payload.Access = append(payload.Access, *access)
+func (payload *tokenPayload) AppendAccess(access access) {
+	payload.Access = append(payload.Access, access)
+}
+
+func (payload *tokenPayload) Generate() (string, error) {
+
+	block, _ := pem.Decode([]byte(cfg.PrivateKey))
+	privKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+
+	now := int(time.Now().Unix())
+	exp := int(time.Now().Unix() + 600)
+
+	payload.Iss = cfg.Issuer
+	payload.Iat = &now
+	payload.Nbf = &now
+	payload.Exp = &exp
+
+	hashed := sha512.Sum512([]byte("eee"))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA512, hashed[:])
+	if err != nil {
+		return "", err
+	}
+
+	return safeEncode(signature), nil
 }
 
 type access struct {
-	noCopy noCopy
-	sync.Mutex
+	*sync.Mutex
 	Type    string   `json:"type,omitempty"`
 	Name    string   `json:"name,omitempty"`
 	Actions []string `json:"actions,omitempty"`
@@ -94,7 +110,6 @@ func (access *access) Enable(act string) {
 	defer access.Unlock()
 
 	access.Actions = append(access.Actions, act)
-
 }
 
 type noCopy struct {
@@ -116,7 +131,6 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	fmt.Println(cfg)
 
 	// 注册网络监听
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
@@ -174,10 +188,8 @@ func authHandler(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	tmpToken := &token{
-		tokenPayload: &tokenPayload{
-			Aud: service,
-		},
+	tmpToken := &tokenPayload{
+		Aud: service,
 	}
 
 	scopes := strings.Split(scope, ":")
@@ -204,14 +216,16 @@ func authHandler(writer http.ResponseWriter, request *http.Request) {
 		}
 		access.Enable(scopes[2])
 
-		tmpToken.tokenPayload.AppendAccess(access)
+		tmpToken.AppendAccess(*access)
 
 	} else if query.Get("offline_token") == "true" {
 		// 登录场景
 		// do nothing, direct return
 	}
 
-	tokenJson, err := json.Marshal(tmpToken.tokenPayload)
+	fmt.Println(tmpToken.Generate())
+
+	tokenJson, err := json.Marshal(tmpToken)
 	if err != nil {
 		log.Println("ERR", err)
 		writer.WriteHeader(500)
@@ -232,6 +246,9 @@ func parseConfig(configFilepath string) (*config, error) {
 
 	file, err := ioutil.ReadFile(configFilepath)
 	if err != nil {
+		if _, ok := err.(*fs.PathError); ok {
+			return nil, errors.New("configuration file not found")
+		}
 		return nil, err
 	}
 
@@ -253,4 +270,10 @@ func checkIn(target string, collection []string) bool {
 	}
 
 	return false
+}
+
+func safeEncode(data []byte) string {
+	encoded := base64.StdEncoding.EncodeToString(data)
+
+	return encoded
 }
