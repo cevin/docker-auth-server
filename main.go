@@ -112,12 +112,6 @@ func (access *access) Enable(act string) {
 	access.Actions = append(access.Actions, act)
 }
 
-type noCopy struct {
-}
-
-func (*noCopy) Lock()   {}
-func (*noCopy) Unlock() {}
-
 func main() {
 
 	var errg errgroup.Group
