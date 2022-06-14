@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -18,7 +19,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -153,17 +157,43 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	log.Printf("INFO server started with : %s \n", ln.Addr())
+	log.Printf("INFO server started with : %s , PID:[%d]\n", ln.Addr(), os.Getpid())
 
 	// 注册HTTP回调
 	http.HandleFunc("/", authHandler)
 
+	httpServer := &http.Server{}
+
 	// 运行HTTP服务
 	errg.Go(func() error {
-		return http.Serve(ln, nil)
+		err := httpServer.Serve(ln)
+		if err != http.ErrServerClosed {
+			return err
+		}
+		return nil
 	})
 
-	log.Fatalln(errg.Wait())
+	// 监听停止信号
+	errg.Go(func() error {
+		stopCh := make(chan os.Signal, 1)
+		defer close(stopCh)
+
+		signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+		<-stopCh
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_ = httpServer.Shutdown(ctx)
+		return nil
+	})
+
+	if err := errg.Wait(); err != nil {
+		log.Fatalln("DONE", err)
+	}
+
+	log.Println("server stopped")
 }
 
 func authHandler(writer http.ResponseWriter, request *http.Request) {
