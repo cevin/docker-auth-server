@@ -19,7 +19,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -73,7 +72,34 @@ func (payload *tokenPayload) AppendAccess(access access) {
 	payload.Access = append(payload.Access, access)
 }
 
-func (payload *tokenPayload) Generate() (string, error) {
+func (payload *tokenPayload) Json() string {
+	encode, _ := json.Marshal(payload)
+
+	return string(encode)
+}
+
+type tokenHeader struct {
+	Alg string `json:"alg,omitempty"`
+	Typ string `json:"typ,omitempty"`
+	X5c string `json:"x5c,omitempty"`
+}
+
+func (tokenHeader *tokenHeader) Json() string {
+	encode, _ := json.Marshal(tokenHeader)
+	return string(encode)
+}
+
+type access struct {
+	Type    string   `json:"type,omitempty"`
+	Name    string   `json:"name,omitempty"`
+	Actions []string `json:"actions,omitempty"`
+}
+
+func (access *access) Enable(act string) {
+	access.Actions = append(access.Actions, act)
+}
+
+func GenerateToken(header *tokenHeader, payload *tokenPayload) (string, error) {
 
 	block, _ := pem.Decode([]byte(cfg.PrivateKey))
 	privKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
@@ -81,6 +107,7 @@ func (payload *tokenPayload) Generate() (string, error) {
 		return "", err
 	}
 
+	// payload
 	now := int(time.Now().Unix())
 	exp := int(time.Now().Unix() + 600)
 
@@ -89,27 +116,22 @@ func (payload *tokenPayload) Generate() (string, error) {
 	payload.Nbf = &now
 	payload.Exp = &exp
 
-	hashed := sha512.Sum512([]byte("eee"))
+	payloadEncode := payload.Json()
+
+	// header
+	headerEncode := header.Json()
+
+	signPayload := fmt.Sprintf("%s.%s", safeEncode([]byte(headerEncode)), safeEncode([]byte(payloadEncode)))
+
+	hashed := sha512.Sum512([]byte(signPayload))
 	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA512, hashed[:])
 	if err != nil {
 		return "", err
 	}
 
-	return safeEncode(signature), nil
-}
+	token := fmt.Sprintf("%s.%s", signPayload, safeEncode(signature))
 
-type access struct {
-	*sync.Mutex
-	Type    string   `json:"type,omitempty"`
-	Name    string   `json:"name,omitempty"`
-	Actions []string `json:"actions,omitempty"`
-}
-
-func (access *access) Enable(act string) {
-	access.Lock()
-	defer access.Unlock()
-
-	access.Actions = append(access.Actions, act)
+	return token, nil
 }
 
 func main() {
@@ -217,16 +239,34 @@ func authHandler(writer http.ResponseWriter, request *http.Request) {
 		// do nothing, direct return
 	}
 
-	fmt.Println(tmpToken.Generate())
+	tmpToken.Sub = account
 
-	tokenJson, err := json.Marshal(tmpToken)
+	token, err := GenerateToken(&tokenHeader{
+		Alg: "RS512",
+		Typ: "JWT",
+		X5c: cfg.Certificate,
+	}, tmpToken)
+
 	if err != nil {
 		log.Println("ERR", err)
 		writer.WriteHeader(500)
 	}
 
 	writer.Header().Set("Content-Type", "application/json; charset:utf-8")
-	_, _ = writer.Write(tokenJson)
+
+	res, err := json.Marshal(struct {
+		Token string `json:"token"`
+	}{
+		Token: token,
+	})
+
+	if err != nil {
+		log.Println("ERR", err)
+		writer.WriteHeader(500)
+		return
+	}
+
+	_, _ = writer.Write(res)
 
 }
 
@@ -268,6 +308,9 @@ func checkIn(target string, collection []string) bool {
 
 func safeEncode(data []byte) string {
 	encoded := base64.StdEncoding.EncodeToString(data)
+	encoded = strings.ReplaceAll(encoded, "=", "")
+	encoded = strings.ReplaceAll(encoded, "+", "-")
+	encoded = strings.ReplaceAll(encoded, "/", "_")
 
 	return encoded
 }
