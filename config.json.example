@@ -1,0 +1,17 @@
+{
+  "server": 8000,
+  "issuer": "issuer",
+  "private_key":"",
+  "certificate": "",
+
+  "users": {
+    "test": "test"
+  },
+
+  "repos": {
+    "test/test": {
+      "read": ["test"],
+      "write": ["test"]
+    }
+  }
+}
