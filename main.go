@@ -79,9 +79,9 @@ func (payload *tokenPayload) Json() string {
 }
 
 type tokenHeader struct {
-	Alg string `json:"alg,omitempty"`
-	Typ string `json:"typ,omitempty"`
-	X5c string `json:"x5c,omitempty"`
+	Alg string   `json:"alg,omitempty"`
+	Typ string   `json:"typ,omitempty"`
+	X5c []string `json:"x5c,omitempty"`
 }
 
 func (tokenHeader *tokenHeader) Json() string {
@@ -244,7 +244,7 @@ func authHandler(writer http.ResponseWriter, request *http.Request) {
 	token, err := GenerateToken(&tokenHeader{
 		Alg: "RS512",
 		Typ: "JWT",
-		X5c: cfg.Certificate,
+		X5c: []string{cfg.Certificate},
 	}, tmpToken)
 
 	if err != nil {
